@@ -1,0 +1,437 @@
+import React, { useState, useMemo } from 'react';
+import { Calculator, AlertTriangle, ShieldCheck, Settings, TrendingDown, DollarSign, Plus, Trash2 } from 'lucide-react';
+
+const App = () => {
+  // --- State: Inputs (ใช้เป็น String เพื่อป้องกันปัญหาลบค่าแล้วแทนที่ด้วย 0 ตอนพิมพ์) ---
+  const [maxPrice, setMaxPrice] = useState('3000');
+  const [minPrice, setMinPrice] = useState('2500');
+  const [gridMode, setGridMode] = useState('usd'); // 'usd' (Arithmetic) or 'pct' (Geometric)
+  const [gridSpacing, setGridSpacing] = useState('50'); // ระยะห่าง
+  const [priceDecimals, setPriceDecimals] = useState('2'); // ตำแหน่งทศนิยมของราคา
+  
+  const [sizeType, setSizeType] = useState('contracts'); // 'contracts' or 'usd'
+  const [sizeValue, setSizeValue] = useState('0.1');
+  
+  const [enableSweep, setEnableSweep] = useState(true);
+  const [sweeps, setSweeps] = useState([
+    { id: 1, price: '2880' }
+  ]);
+  
+  const [totalMargin, setTotalMargin] = useState('1000');
+
+  // --- Functions for Sweep Management ---
+  const addSweep = () => {
+    setSweeps([...sweeps, { id: Date.now(), price: '' }]);
+  };
+
+  const removeSweep = (id) => {
+    setSweeps(sweeps.filter(s => s.id !== id));
+  };
+
+  const updateSweep = (id, value) => {
+    setSweeps(sweeps.map(s => s.id === id ? { ...s, price: value } : s));
+  };
+
+  // --- Calculation Logic ---
+  const results = useMemo(() => {
+    // แปลง String กลับเป็น Float เพื่อคำนวณ
+    const max = parseFloat(maxPrice);
+    const min = parseFloat(minPrice);
+    const spacing = parseFloat(gridSpacing);
+    const size = parseFloat(sizeValue);
+    const margin = parseFloat(totalMargin);
+    const decimals = parseInt(priceDecimals);
+
+    // 1. Validation Check ป้องกัน App Crash
+    if (isNaN(max) || isNaN(min) || isNaN(spacing) || isNaN(size) || isNaN(margin) || isNaN(decimals)) {
+      return { error: 'กรุณากรอกตัวเลขให้ครบถ้วนเพื่อเริ่มคำนวณ' };
+    }
+    if (spacing <= 0) {
+      return { error: 'ระยะห่าง Grid (Spacing) ต้องมากกว่า 0' };
+    }
+    if (max <= min) {
+      return { error: 'Max Buy Price ต้องมีค่ามากกว่า Min Buy Price' };
+    }
+    if (size <= 0) {
+      return { error: 'จำนวน Amount ต่อ Grid ต้องมากกว่า 0' };
+    }
+    if (decimals < 0 || decimals > 8) {
+      return { error: 'ตำแหน่งทศนิยมของราคาควรอยู่ระหว่าง 0 ถึง 8 ตำแหน่ง' };
+    }
+
+    let levels = [];
+    
+    // 2. Generate Grid Levels ตามโหมดราคา
+    if (gridMode === 'usd') {
+      // Arithmetic Grid: ลดลงด้วยมูลค่าดอลลาร์คงที่
+      for (let p = max; p >= min; p -= spacing) {
+        levels.push(p);
+      }
+    } else {
+      // Geometric Grid: ลดลงด้วยอัตราส่วนเปอร์เซ็นต์คงที่
+      // p_next = p_current * (1 - spacing/100)
+      let currentPrice = max;
+      const pctFactor = 1 - (spacing / 100);
+      
+      if (pctFactor >= 1 || pctFactor <= 0) {
+        return { error: 'ค่าเปอร์เซ็นต์ Spacing ต้องอยู่ระหว่าง 0% ถึง 100%' };
+      }
+
+      // ป้องกัน Infinite Loop ในกรณีที่ราคาหลุดโซน
+      while (currentPrice >= min) {
+        levels.push(currentPrice);
+        currentPrice = currentPrice * pctFactor;
+        
+        // เซฟตี้ตัดกรณีลูปนานเกินไป
+        if (levels.length > 5000) break;
+      }
+    }
+
+    // ป้องกันกรณีผู้ใช้ใส่ Spacing น้อยเกินไปจนเกิด Infinite loop / Memory leak
+    if (levels.length > 5000) {
+      return { error: `จำนวน Grid หนาแน่นเกินไป (${levels.length.toLocaleString()} ไม้) กรุณาเพิ่มระยะห่าง (Spacing)` };
+    }
+
+    if (levels.length === 0) {
+      return { error: 'ไม่มีระดับราคาใดถูกสร้างขึ้น กรุณาตรวจสอบช่วงราคาและระยะห่าง' };
+    }
+
+    // 3. เตรียมข้อมูล Multi-level Sweeps
+    let validSweeps = [];
+    if (enableSweep) {
+      validSweeps = sweeps
+        .map(s => parseFloat(s.price))
+        .filter(p => !isNaN(p) && p > 0)
+        .sort((a, b) => b - a); // เรียงจากมากไปน้อย (Descending)
+    }
+
+    let totalContracts = 0;
+    let totalNotional = 0;
+    let rows = [];
+
+    // 4. Grid Evaluation Loop
+    levels.forEach((level, index) => {
+      let execPrice = level;
+      let isSweep = false;
+
+      // Apply Sweep Logic: หาจุดรวบโซนที่ราคาสูงที่สุด ที่มีค่าน้อยกว่าหรือเท่ากับ Grid Level นั้นๆ
+      if (enableSweep && validSweeps.length > 0) {
+        const applicableSweep = validSweeps.find(sweepPrice => level >= sweepPrice);
+        if (applicableSweep !== undefined) {
+          execPrice = applicableSweep;
+          isSweep = true;
+        }
+      }
+
+      // Calculate Size
+      let contracts = 0;
+      let notional = 0;
+      if (sizeType === 'contracts') {
+        contracts = size;
+        notional = contracts * execPrice;
+      } else {
+        notional = size;
+        contracts = notional / execPrice;
+      }
+
+      totalContracts += contracts;
+      totalNotional += notional;
+      let avgEntry = totalNotional / totalContracts;
+
+      rows.push({
+        lineNumber: index + 1,
+        gridLevel: level,
+        execPrice,
+        isSweep,
+        contracts,
+        notional,
+        cumContracts: totalContracts,
+        cumNotional: totalNotional,
+        avgEntry
+      });
+    });
+
+    const finalAvgEntry = totalContracts > 0 ? totalNotional / totalContracts : 0;
+    
+    // Exact Liquidation Formula (Cross Margin, absolute zero equity threshold)
+    let liqPrice = totalContracts > 0 ? finalAvgEntry - (margin / totalContracts) : 0;
+    if (liqPrice < 0) liqPrice = 0;
+
+    const isBustBeforeEnd = liqPrice > min;
+
+    return {
+      error: null,
+      rows,
+      totalContracts,
+      totalNotional,
+      finalAvgEntry,
+      liqPrice,
+      isBustBeforeEnd,
+      minPrice: min,
+      decimals
+    };
+  }, [maxPrice, minPrice, gridMode, gridSpacing, priceDecimals, sizeType, sizeValue, enableSweep, sweeps, totalMargin]);
+
+  // --- Helpers ---
+  const formatNum = (num, decimals = 4) => {
+    if (isNaN(num)) return '0';
+    return Number(num).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  };
+  
+  const formatUSD = (num) => {
+    if (isNaN(num)) return '$0.00';
+    return '$' + Number(num).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  // ดึงระดับทศนิยมที่ใช้ในการแสดงผลราคา
+  const displayDecimals = results.error ? 2 : results.decimals;
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-200 p-4 md:p-6 font-sans">
+      <div className="max-w-6xl mx-auto space-y-6">
+        
+        {/* Header */}
+        <div className="flex items-center space-x-3 pb-4 border-b border-slate-800">
+          <Calculator className="w-8 h-8 text-blue-400" />
+          <h1 className="text-2xl font-bold text-white tracking-wide">Hyperliquid Grid EA Calculator</h1>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Left Column: Inputs */}
+          <div className="lg:col-span-1 space-y-6">
+            
+            {/* Grid Settings */}
+            <div className="bg-slate-900 rounded-xl p-5 border border-slate-800 shadow-lg">
+              <div className="flex items-center space-x-2 mb-4 text-blue-400">
+                <Settings className="w-5 h-5" />
+                <h2 className="text-lg font-semibold text-white">ตั้งค่าโซน Grid</h2>
+              </div>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">Max Buy Price (Red Line บนสุด)</label>
+                  <input type="number" value={maxPrice} onChange={e => setMaxPrice(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">Min Buy Price (Grid ต่ำสุด)</label>
+                  <input type="number" value={minPrice} onChange={e => setMinPrice(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500" />
+                </div>
+                
+                {/* Binary Switch Mode */}
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-2">โหมดการคำนวณระยะห่าง (Grid Mode)</label>
+                  <div className="grid grid-cols-2 gap-2 bg-slate-950 p-1 rounded-lg border border-slate-800">
+                    <button 
+                      onClick={() => setGridMode('usd')}
+                      className={`py-1.5 text-xs font-medium rounded-md transition-all ${gridMode === 'usd' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}>
+                      Price Distance (USD)
+                    </button>
+                    <button 
+                      onClick={() => setGridMode('pct')}
+                      className={`py-1.5 text-xs font-medium rounded-md transition-all ${gridMode === 'pct' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}>
+                      Price Distance (%)
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">
+                    {gridMode === 'usd' ? 'ระยะห่าง Grid (Price Distance - USD)' : 'ระยะห่าง Grid (Geometric Spacing - %)'}
+                  </label>
+                  <div className="relative">
+                    <input 
+                      type="number" 
+                      step={gridMode === 'usd' ? '1' : '0.1'} 
+                      value={gridSpacing} 
+                      onChange={e => setGridSpacing(e.target.value)} 
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg pl-3 pr-8 py-2 text-white focus:outline-none focus:border-blue-500" 
+                    />
+                    <span className="absolute right-3 top-2 text-xs text-slate-500 font-bold">
+                      {gridMode === 'usd' ? '$' : '%'}
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-amber-400 mb-1">ทศนิยมตำแหน่งราคา (Price Decimals)</label>
+                  <input type="number" min="0" max="8" value={priceDecimals} onChange={e => setPriceDecimals(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-amber-500" />
+                </div>
+              </div>
+            </div>
+
+            {/* Position Sizing */}
+            <div className="bg-slate-900 rounded-xl p-5 border border-slate-800 shadow-lg">
+              <div className="flex items-center space-x-2 mb-4 text-emerald-400">
+                <DollarSign className="w-5 h-5" />
+                <h2 className="text-lg font-semibold text-white">ขนาดสัญญา & ทุน</h2>
+              </div>
+              
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-2">
+                  <button 
+                    onClick={() => setSizeType('contracts')}
+                    className={`py-2 text-xs font-medium rounded-lg border transition-colors ${sizeType === 'contracts' ? 'bg-emerald-900/30 border-emerald-500 text-emerald-400' : 'bg-slate-950 border-slate-700 text-slate-400 hover:border-slate-500'}`}>
+                    Fix Contracts/Lot
+                  </button>
+                  <button 
+                    onClick={() => setSizeType('usd')}
+                    className={`py-2 text-xs font-medium rounded-lg border transition-colors ${sizeType === 'usd' ? 'bg-emerald-900/30 border-emerald-500 text-emerald-400' : 'bg-slate-950 border-slate-700 text-slate-400 hover:border-slate-500'}`}>
+                    Fix USD amount
+                  </button>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">ขนาดต่อ 1 Grid ({sizeType === 'contracts' ? 'Contracts' : 'USD'})</label>
+                  <input type="number" step="0.01" value={sizeValue} onChange={e => setSizeValue(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500" />
+                </div>
+                <div className="pt-2 border-t border-slate-800">
+                  <label className="block text-xs font-medium text-slate-400 mb-1">Total Margin (USD) - ทุนหน้าตัก</label>
+                  <input type="number" value={totalMargin} onChange={e => setTotalMargin(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500 text-lg font-semibold text-emerald-300" />
+                </div>
+              </div>
+            </div>
+
+            {/* Sweep Settings */}
+            <div className="bg-slate-900 rounded-xl p-5 border border-slate-800 shadow-lg">
+              <label className="flex items-center space-x-3 cursor-pointer">
+                <input type="checkbox" checked={enableSweep} onChange={e => setEnableSweep(e.target.checked)} className="form-checkbox h-5 w-5 text-purple-500 rounded border-slate-700 bg-slate-950 focus:ring-purple-500 focus:ring-offset-slate-900" />
+                <span className="text-lg font-semibold text-white">เปิดใช้รวบโซน (Sweep)</span>
+              </label>
+              
+              {enableSweep && (
+                <div className="space-y-3 mt-4 animate-in fade-in slide-in-from-top-2 duration-300">
+                  <p className="text-xs text-slate-400 mb-2 leading-relaxed">
+                    เพิ่มจุดรวบโซนได้หลายระดับ Grid ที่อยู่สูงกว่าจุดรวบโซน (แต่ต่ำกว่าจุดรวบที่สูงกว่า) จะถูกดึงมาเปิดพร้อมกันที่ราคาเดียวกัน
+                  </p>
+                  
+                  {sweeps.map((sweep, index) => (
+                    <div key={sweep.id} className="flex items-center space-x-2">
+                      <span className="text-slate-500 text-xs font-medium w-4">#{index + 1}</span>
+                      <input 
+                        type="number" 
+                        value={sweep.price} 
+                        onChange={e => updateSweep(sweep.id, e.target.value)} 
+                        className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-purple-500" 
+                        placeholder="ระบุราคา"
+                      />
+                      {sweeps.length > 1 && (
+                        <button 
+                          onClick={() => removeSweep(sweep.id)}
+                          className="p-2 bg-red-950/40 text-red-400 border border-red-900 rounded-lg hover:bg-red-900/50 transition-colors"
+                          title="ลบจุดนี้"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  
+                  <button 
+                    onClick={addSweep}
+                    className="w-full flex items-center justify-center space-x-1 mt-2 py-2 border border-purple-800/60 bg-purple-900/20 text-purple-400 rounded-lg hover:bg-purple-900/40 transition-colors text-sm font-medium"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>เพิ่มจุดรวบโซนใหม่</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+          </div>
+
+          {/* Right Column: Results */}
+          <div className="lg:col-span-2 space-y-6">
+            
+            {results.error ? (
+              // Error State UI
+              <div className="bg-red-950/20 border border-red-900/50 rounded-xl p-10 flex flex-col items-center justify-center text-center space-y-4 h-full min-h-[300px]">
+                <AlertTriangle className="w-12 h-12 text-red-500/80" />
+                <h3 className="text-lg font-medium text-red-400">{results.error}</h3>
+                <p className="text-sm text-slate-500">กรุณาตรวจสอบค่า Input ด้านซ้ายอีกครั้ง</p>
+              </div>
+            ) : (
+              // Normal Results UI
+              <>
+                {/* Dashboard Cards */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                    <p className="text-slate-400 text-xs font-medium mb-1">Total Grids</p>
+                    <p className="text-2xl font-bold text-white">{results.rows.length}</p>
+                  </div>
+                  <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                    <p className="text-slate-400 text-xs font-medium mb-1">Max Contracts (sz)</p>
+                    <p className="text-2xl font-bold text-blue-400">{formatNum(results.totalContracts, 4)}</p>
+                  </div>
+                  <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                    <p className="text-slate-400 text-xs font-medium mb-1">Total Value (Notional)</p>
+                    <p className="text-2xl font-bold text-emerald-400">{formatUSD(results.totalNotional)}</p>
+                  </div>
+                  <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                    <p className="text-slate-400 text-xs font-medium mb-1">Avg. Entry Price</p>
+                    <p className="text-2xl font-bold text-purple-400">{formatNum(results.finalAvgEntry, displayDecimals)}</p>
+                  </div>
+                </div>
+
+                {/* Liquidation Status */}
+                <div className={`p-5 rounded-xl border flex flex-col md:flex-row md:items-center space-y-4 md:space-y-0 md:space-x-4 ${results.isBustBeforeEnd ? 'bg-red-950/40 border-red-800' : 'bg-emerald-950/40 border-emerald-800'}`}>
+                  {results.isBustBeforeEnd ? <AlertTriangle className="w-10 h-10 text-red-500 flex-shrink-0 hidden md:block" /> : <ShieldCheck className="w-10 h-10 text-emerald-500 flex-shrink-0 hidden md:block" />}
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-300">Estimated Liquidation Price (ราคาพอร์ตแตก)</h3>
+                    <p className={`text-3xl font-bold ${results.isBustBeforeEnd ? 'text-red-400' : 'text-emerald-400'}`}>
+                      {formatNum(results.liqPrice, displayDecimals)}
+                    </p>
+                    {results.isBustBeforeEnd ? (
+                      <p className="text-xs text-red-300 mt-1">อันตราย! พอร์ตจะแตกที่ราคานี้ ซึ่งสูงกว่าโซนไม้สุดท้าย ({formatNum(results.minPrice, displayDecimals)}) ของคุณ</p>
+                    ) : (
+                      <p className="text-xs text-emerald-300 mt-1">ปลอดภัย: ราคา Liquidation ต่ำกว่าไม้ล่างสุดที่คุณตั้งไว้ ({formatNum(results.minPrice, displayDecimals)})</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Grid Table */}
+                <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden shadow-lg">
+                  <div className="p-4 border-b border-slate-800 flex items-center space-x-2 bg-slate-900/50">
+                    <TrendingDown className="w-5 h-5 text-slate-400" />
+                    <h2 className="text-lg font-semibold text-white">Simulated Execution Flow ({gridMode === 'usd' ? 'Arithmetic Grid' : 'Geometric Grid'})</h2>
+                  </div>
+                  <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+                    <table className="w-full text-sm text-left relative">
+                      <thead className="text-xs text-slate-400 bg-slate-950/90 uppercase border-b border-slate-800 sticky top-0 z-10 backdrop-blur-sm">
+                        <tr>
+                          <th className="px-4 py-3 font-medium">Line #</th>
+                          <th className="px-4 py-3 font-medium">Grid Level</th>
+                          <th className="px-4 py-3 font-medium">Exec. Price</th>
+                          <th className="px-4 py-3 text-right font-medium">Size Added</th>
+                          <th className="px-4 py-3 text-right font-medium">Cum. Size (sz)</th>
+                          <th className="px-4 py-3 text-right font-medium">Avg Entry</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60">
+                        {results.rows.map((row, idx) => (
+                          <tr key={idx} className={`hover:bg-slate-800/40 transition-colors ${row.isSweep ? 'bg-purple-900/5' : ''}`}>
+                            <td className="px-4 py-3 text-slate-500 text-xs">#{row.lineNumber}</td>
+                            <td className="px-4 py-3 text-slate-300">{formatNum(row.gridLevel, displayDecimals)}</td>
+                            <td className="px-4 py-3">
+                              <span className={`${row.isSweep ? 'text-purple-400 font-bold' : 'text-slate-100'}`}>
+                                {formatNum(row.execPrice, displayDecimals)}
+                              </span>
+                              {row.isSweep && <span className="ml-2 text-[9px] bg-purple-500/20 border border-purple-500/30 text-purple-300 px-1.5 py-0.5 rounded tracking-wide">SWEEP</span>}
+                            </td>
+                            <td className="px-4 py-3 text-right text-emerald-400/90 text-xs">+{formatNum(row.contracts)}</td>
+                            <td className="px-4 py-3 text-right font-medium text-blue-300">{formatNum(row.cumContracts)}</td>
+                            <td className="px-4 py-3 text-right text-amber-300/90">{formatNum(row.avgEntry, displayDecimals)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default App;
