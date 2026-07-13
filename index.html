@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hyperliquid Grid EA Calculator</title>
+  <title>Grid EA Calculator</title>
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; background: #020617; color: #e2e8f0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; }
@@ -35,19 +35,19 @@
 </head>
 <body>
   <main>
-    <h1>Hyperliquid Grid EA Calculator</h1>
+    <h1>Grid EA Calculator</h1>
     <div class="grid">
       <section>
         <div class="card">
           <h2>ตั้งค่าโซน Grid</h2>
-          <label>Max Buy Price</label><input id="maxPrice" type="number" value="3000">
-          <label>Min Buy Price</label><input id="minPrice" type="number" value="2500">
+          <label>Max Buy Price</label><input id="maxPrice" type="number" value="85">
+          <label>Min Buy Price</label><input id="minPrice" type="number" value="45">
           <label>Grid Mode</label>
           <div class="row">
             <button id="modeUsd" class="active" type="button">USD</button>
             <button id="modePct" type="button">%</button>
           </div>
-          <label>Grid Spacing</label><input id="gridSpacing" type="number" value="50" step="0.1">
+          <label>Grid Spacing</label><input id="gridSpacing" type="number" value="0.5" step="0.1">
           <label>Price Decimals</label><input id="priceDecimals" type="number" value="2" min="0" max="8">
         </div>
 
@@ -59,7 +59,7 @@
             <button id="sizeUsd" type="button">USD amount</button>
           </div>
           <label>ขนาดต่อ 1 Grid</label><input id="sizeValue" type="number" value="0.1" step="0.01">
-          <label>Total Margin (USD)</label><input id="totalMargin" type="number" value="1000">
+          <label>Total Margin (USD)</label><input id="totalMargin" type="number" value="5000">
         </div>
 
         <div class="card">
@@ -94,7 +94,7 @@
   <script>
     let gridMode = 'usd';
     let sizeType = 'contracts';
-    let sweeps = [{ id: 1, price: '2880' }];
+    let sweeps = [{ id: 1, price: '65' }];
 
     const $ = (id) => document.getElementById(id);
     const num = (id) => parseFloat($(id).value);
